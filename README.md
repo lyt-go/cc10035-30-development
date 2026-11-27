@@ -69,6 +69,27 @@ npm run dev
 | 数据流管道 | `data_stream` | 流管道 | 管道编号、输入源、处理算子链 |
 | 聚合分发 | `aggregate_sink` | 分发任务 | 任务编号、数据窗口、聚合函数 |
 
+## 探头校准生效审批
+
+侧栏「校准生效审批」提供题述闭环，也可从「时序测点」或「告警触发」页顶部入口进入：
+
+1. `ALARM-CAL-80` 为严格 `> 80` 规则；先确认 `SR-HIST-79` 在 V1（乘数 1、偏移 0）下为 79，不触发。
+2. `CAL-BATCH-001` 含两行：`CAL-VER-OFFSET2` 是单位 ℃、乘数 1、偏移 +2 的合格行；`CAL-VER-BAD-UNIT` 是错单位行。点击「按行办理」后，错单位行单独退回，不替换 V1，也不阻止合格行建单。
+3. 从 `CAL-VER-OFFSET2` 建立 `CAL-APR-0001` 并「审批通过并发布生效」。系统检测到未确认的在途读数 `SR-INFLIGHT-79` 与 V2 时段相交，记录版本冲突和待办；告警服务立即用同一 `CAL-COEF-V2` 的乘数 1 与偏移 2 计算 `79 × 1 + 2 = 81`，严格大于 80，因此触发。
+4. 在生效审批详情页可通过锚点回查待办、告警结果、原始值/乘数/偏移/校准值/系数版本对应关系和完整留证；确认后关闭冲突待办。已确认的 `SR-HIST-79` 保留 V1 的 79 判定，仍可在 `sample_reading`、`alarm_result` 或校准工作台查询。
+
+同名探头使用 `设备编号::探头实际身份` 作为身份键，不按探头名称关联系数。主要聚合接口：
+
+- `GET /api/calibration/scenario` / `POST /api/calibration/scenario/reset`
+- `POST /api/calibration/original-reading/confirm`
+- `POST /api/calibration/verification/process`
+- `POST /api/calibration/verification/{行号}/submit`
+- `POST /api/calibration/approvals/{单号}/approve-and-activate`
+- `GET /api/calibration/approvals/{单号}`
+- `POST /api/calibration/approvals/{单号}/resolve-conflict`
+
+检定行、审批单、采样、告警结果和待办也分别注册为 `calibration_verification`、`calibration_approval`、`sample_reading`、`alarm_result`、`approval_todo` 通用资源。
+
 ## 约定
 
 - 全部模块共享`frontend/src/views/WorkbenchView.vue|tsx`和一套资源路由。

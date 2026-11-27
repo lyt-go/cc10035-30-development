@@ -15,6 +15,12 @@
       </div>
     </header>
 
+    <div v-if="moduleKey === 'ts_point' || moduleKey === 'alarm_trigger'" class="calibration-banner" data-testid="calibration-banner">
+      <strong>探头分时校准：</strong>
+      <span>从探头检定行建立生效审批单，告警服务按获准时段内同一版本的乘数与偏移判定，并在审批详情页留证。</span>
+      <RouterLink class="btn primary" to="/calibration" data-testid="open-calibration-workflow">打开校准生效审批台</RouterLink>
+    </div>
+
     <div class="stat-row">
       <article v-for="item in stats" :key="item.label" class="stat-card">
         <span class="stat-label">{{ item.label }}</span>
@@ -189,3 +195,19 @@ async function reload() {
 
 onMounted(reload)
 </script>
+
+<style scoped>
+.calibration-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: #eef4ff;
+  border: 1px solid #b2ccff;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+.calibration-banner .btn { text-decoration: none; }
+</style>

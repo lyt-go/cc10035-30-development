@@ -410,7 +410,10 @@ class CrossModuleService:
     # ========================
 
     def evaluate_alarm_with_rule(
-        self, point_id: str, current_value: float,
+        self,
+        point_id: str,
+        current_value: float,
+        **calibration_kwargs: Any,
     ) -> dict[str, Any]:
         """当测点值触发告警时，自动执行关联的联动规则。
 
@@ -422,6 +425,13 @@ class CrossModuleService:
         """
         alarm_rows = store.rows("alarm_trigger")
         rule_rows = store.rows("rule_engine")
+
+        # 告警服务先消费有效校准系数版本，再进行严格阈值判断。
+        from app.services.alarm_trigger import AlarmTriggerService
+        calibration = AlarmTriggerService().calibration_context(
+            point_id, current_value, **calibration_kwargs
+        )
+        judged_value = calibration["calibrated_value"]
 
         # 步骤1：查找告警规则
         triggered_alarms = []
@@ -439,20 +449,18 @@ class CrossModuleService:
 
             condition = alarm.get("告警条件", "")
             triggered = False
-            if ">" in condition:
-                if current_value > upper:
-                    triggered = True
+            if ">=" in condition:
+                triggered = judged_value >= upper
+            elif ">" in condition:
+                triggered = judged_value > upper
+            elif "<=" in condition:
+                triggered = judged_value <= lower
             elif "<" in condition:
-                if current_value < lower:
-                    triggered = True
-            elif ">" in condition and "<" in condition:
-                if current_value > upper or current_value < lower:
-                    triggered = True
+                triggered = judged_value < lower
             elif "between" in condition.lower():
-                if lower <= current_value <= upper:
-                    triggered = True
+                triggered = lower <= judged_value <= upper
             else:
-                triggered = current_value > upper or current_value < lower
+                triggered = judged_value > upper or judged_value < lower
 
             if triggered:
                 triggered_alarms.append(alarm)
@@ -460,10 +468,14 @@ class CrossModuleService:
         if not triggered_alarms:
             return {
                 "ok": True,
-                "message": f"测点 {point_id} 值 {current_value} 未触发任何告警",
+                "message": (
+                    f"测点 {point_id} 原始值 {current_value} 经版本 "
+                    f"{calibration['coefficient_version']} 校准为 {judged_value}，未触发任何告警"
+                ),
                 "triggered": False,
                 "alarms": [],
                 "actions": [],
+                "calibration": calibration,
             }
 
         # 步骤2：执行联动规则
@@ -482,7 +494,9 @@ class CrossModuleService:
                 actions.append({
                     "alarm_rule": alarm.get("规则编号"),
                     "alarm_level": level,
-                    "triggered_value": current_value,
+                    "triggered_value": judged_value,
+                    "raw_value": current_value,
+                    "coefficient_version": calibration["coefficient_version"],
                     "rule_engine_rule": rule.get("规则编号"),
                     "action": action,
                     "params": action_params,
@@ -493,8 +507,14 @@ class CrossModuleService:
 
         return {
             "ok": True,
-            "message": f"测点 {point_id} 值 {current_value} 触发 {len(triggered_alarms)} 条告警",
+            "message": (
+                f"测点 {point_id} 原始值 {current_value} 经 {calibration['coefficient_version']} "
+                f"校准为 {judged_value}，触发 {len(triggered_alarms)} 条告警"
+            ),
             "triggered": True,
+            "current_value": current_value,
+            "calibrated_value": judged_value,
+            "calibration": calibration,
             "threat_level": triggered_alarms[0].get("告警级别", "警告"),
             "alarms": [
                 {"rule_id": a.get("规则编号"), "condition": a.get("告警条件"),

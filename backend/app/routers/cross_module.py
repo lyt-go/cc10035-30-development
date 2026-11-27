@@ -88,9 +88,18 @@ def flow4_gap_recovery(
 def flow5_evaluate_alarm(
     point_id: str = Query(..., description="测点编号"),
     current_value: float = Query(..., description="当前值"),
+    device_id: str | None = Query(default=None, description="设备编号，用于同名探头隔离"),
+    probe_identity: str | None = Query(default=None, description="探头实际身份/序列号"),
+    sampled_at: str | None = Query(default=None, description="采样时间 ISO8601"),
 ):
     """当测点值触发告警时，自动执行关联的联动规则。"""
-    return cross_service.evaluate_alarm_with_rule(point_id, current_value)
+    return cross_service.evaluate_alarm_with_rule(
+        point_id,
+        current_value,
+        device_id=device_id,
+        probe_identity=probe_identity,
+        sampled_at=sampled_at,
+    )
 
 
 # ==================== Flow 6: 设备影子与标签绑定 ====================

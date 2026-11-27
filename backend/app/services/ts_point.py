@@ -28,7 +28,7 @@ class TsPointService(BaseModuleService):
     MODULE = "ts_point"
     ENTITY = "测点定义"
     OPERATION_TERM = "采集"
-    LIST_FIELDS = ["测点编号", "设备编号", "测点名称", "数据类型", "采集间隔", "上报方式", "单位符号", "量程范围"]
+    LIST_FIELDS = ["测点编号", "设备编号", "测点名称", "探头实际身份", "数据类型", "采集间隔", "上报方式", "单位符号", "量程范围"]
     REQUIRED_FIELDS = ["测点编号", "设备编号", "测点名称"]
     STATUS_ORDER = ["待配置", "采集中", "已停采", "已废弃"]
     ACTION_RULES = {"启动采集": "采集中", "停止采集": "已停采", "标记废弃": "已废弃"}

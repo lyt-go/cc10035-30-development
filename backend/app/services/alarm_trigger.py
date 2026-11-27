@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.services.base import BaseModuleService
+from app.services.calibration import identity_key, parse_datetime, workflow
 from app.store import store
 
 CST = timezone(timedelta(hours=8))
@@ -31,7 +32,62 @@ class AlarmTriggerService(BaseModuleService):
     ACTION_RULES = {"提交验证": "待验证", "启用规则": "已启用", "静默规则": "已静默"}
     NEGATIVE_ACTIONS = []
 
-    def evaluate_threshold(self, point_id: str, current_value: float) -> dict[str, Any]:
+    def calibration_context(
+        self,
+        point_id: str,
+        current_value: float,
+        *,
+        device_id: str | None = None,
+        probe_identity: str | None = None,
+        sampled_at: str | datetime | None = None,
+        coefficient_version: str | None = None,
+    ) -> dict[str, Any]:
+        """解析同名探头身份，并返回采样时刻有效的同一版乘数/偏移。"""
+        point = next(
+            (row for row in store.rows("ts_point") if row.get("测点编号") == point_id),
+            None,
+        )
+        device_id = device_id or (str(point.get("设备编号", "")) if point else "")
+        probe_identity = probe_identity or (str(point.get("探头实际身份", "")) if point else "")
+        at = parse_datetime(sampled_at) or _now_dt()
+
+        coefficient = None
+        version = "RAW-UNVERSIONED"
+        multiplier = 1.0
+        offset = 0.0
+        key = ""
+        if device_id and probe_identity:
+            key = identity_key(device_id, probe_identity)
+            coefficient = workflow.coefficient_for(key, at, coefficient_version)
+            if coefficient is not None:
+                version = str(coefficient["系数版本"])
+                multiplier = float(coefficient["multiplier"])
+                offset = float(coefficient["offset"])
+
+        calibrated_value = round(float(current_value) * multiplier + offset, 6)
+        return {
+            "device_id": device_id,
+            "probe_identity": probe_identity,
+            "identity_key": key,
+            "sampled_at": at.isoformat(timespec="seconds"),
+            "coefficient_version": version,
+            "multiplier": multiplier,
+            "offset": offset,
+            "raw_value": float(current_value),
+            "calibrated_value": calibrated_value,
+            "coefficient_found": coefficient is not None,
+        }
+
+    def evaluate_threshold(
+        self,
+        point_id: str,
+        current_value: float,
+        *,
+        device_id: str | None = None,
+        probe_identity: str | None = None,
+        sampled_at: str | datetime | None = None,
+        coefficient_version: str | None = None,
+    ) -> dict[str, Any]:
         """评估单个测点是否触发告警阈值。
 
         业务流程：
@@ -40,6 +96,15 @@ class AlarmTriggerService(BaseModuleService):
         3. 返回触发结果和告警详情
         """
         rows = store.rows(self.MODULE)
+        calibration = self.calibration_context(
+            point_id,
+            current_value,
+            device_id=device_id,
+            probe_identity=probe_identity,
+            sampled_at=sampled_at,
+            coefficient_version=coefficient_version,
+        )
+        judged_value = calibration["calibrated_value"]
         triggered = []
         for alarm in rows:
             if alarm.get("关联测点") != point_id or alarm.get("status") != "已启用":
@@ -55,14 +120,19 @@ class AlarmTriggerService(BaseModuleService):
 
             condition = alarm.get("告警条件", "")
             hit = False
-            if ">" in condition:
-                hit = current_value > upper
+            if ">=" in condition:
+                hit = judged_value >= upper
+            elif ">" in condition:
+                # 题述规则是“严格大于 80”：80 本身不能触发。
+                hit = judged_value > upper
+            elif "<=" in condition:
+                hit = judged_value <= lower
             elif "<" in condition:
-                hit = current_value < lower
+                hit = judged_value < lower
             elif "between" in condition.lower():
-                hit = lower <= current_value <= upper
+                hit = lower <= judged_value <= upper
             else:
-                hit = current_value > upper or current_value < lower
+                hit = judged_value > upper or judged_value < lower
 
             if hit:
                 triggered.append({
@@ -70,7 +140,15 @@ class AlarmTriggerService(BaseModuleService):
                     "告警级别": alarm.get("告警级别"),
                     "阈值上限": upper,
                     "阈值下限": lower,
-                    "当前值": current_value,
+                    "原始值": calibration["raw_value"],
+                    "校准值": judged_value,
+                    "当前值": judged_value,
+                    "raw_value": calibration["raw_value"],
+                    "calibrated_value": judged_value,
+                    "multiplier": calibration["multiplier"],
+                    "offset": calibration["offset"],
+                    "coefficient_version": calibration["coefficient_version"],
+                    "identity_key": calibration["identity_key"],
                     "通知方式": alarm.get("通知方式"),
                     "触发时间": _now(),
                 })
@@ -79,6 +157,9 @@ class AlarmTriggerService(BaseModuleService):
             "ok": True,
             "point_id": point_id,
             "current_value": current_value,
+            "raw_value": calibration["raw_value"],
+            "calibrated_value": judged_value,
+            "calibration": calibration,
             "triggered_count": len(triggered),
             "alarms": triggered,
         }
@@ -135,44 +216,39 @@ class AlarmTriggerService(BaseModuleService):
 
     # ========== 跨模块方法 ==========
 
-    def evaluate_with_rule_engine(self, point_id: str, current_value: float) -> dict[str, Any]:
+    def evaluate_with_rule_engine(
+        self,
+        point_id: str,
+        current_value: float,
+        **calibration_kwargs: Any,
+    ) -> dict[str, Any]:
         """告警触发后自动查找联动规则引擎执行对应动作。
 
         业务流程：
-        1. 评估告警阈值
+        1. 经校准系数版本评估告警阈值
         2. 如触发告警，查找rule_engine中已启用的联动规则
         3. 执行匹配的动作并记录
         """
-        alarm_rows = store.rows(self.MODULE)
         rule_rows = store.rows("rule_engine")
-
-        triggered = []
-        for alarm in alarm_rows:
-            if alarm.get("关联测点") != point_id or alarm.get("status") != "已启用":
-                continue
-            try:
-                upper = float(alarm.get("阈值上限", "inf"))
-            except (ValueError, TypeError):
-                upper = float("inf")
-            try:
-                lower = float(alarm.get("阈值下限", "-inf"))
-            except (ValueError, TypeError):
-                lower = float("-inf")
-
-            condition = alarm.get("告警条件", "")
-            hit = False
-            if ">" in condition:
-                hit = current_value > upper
-            elif "<" in condition:
-                hit = current_value < lower
-            else:
-                hit = current_value > upper or current_value < lower
-
-            if hit:
-                triggered.append(alarm)
+        evaluation = self.evaluate_threshold(point_id, current_value, **calibration_kwargs)
+        triggered_ids = {item.get("规则编号") for item in evaluation.get("alarms", [])}
+        triggered = [
+            alarm for alarm in store.rows(self.MODULE)
+            if alarm.get("规则编号") in triggered_ids
+        ]
 
         if not triggered:
-            return {"ok": True, "triggered": False, "message": f"测点 {point_id} 值 {current_value} 未触发任何告警"}
+            calibrated = evaluation.get("calibrated_value", current_value)
+            version = evaluation.get("calibration", {}).get("coefficient_version", "RAW")
+            return {
+                "ok": True,
+                "triggered": False,
+                "message": (
+                    f"测点 {point_id} 原始值 {current_value} 经版本 {version} "
+                    f"校准为 {calibrated}，未触发任何告警"
+                ),
+                "evaluation": evaluation,
+            }
 
         # 查找联动规则
         actions = []
@@ -192,6 +268,9 @@ class AlarmTriggerService(BaseModuleService):
                     "action": rule.get("执行动作"),
                     "params": rule.get("动作参数"),
                     "exec_count": exec_count,
+                    "coefficient_version": evaluation["calibration"]["coefficient_version"],
+                    "raw_value": evaluation["raw_value"],
+                    "calibrated_value": evaluation["calibrated_value"],
                 })
 
         return {
@@ -199,8 +278,11 @@ class AlarmTriggerService(BaseModuleService):
             "triggered": True,
             "point_id": point_id,
             "current_value": current_value,
+            "calibrated_value": evaluation["calibrated_value"],
+            "calibration": evaluation["calibration"],
             "triggered_alarms": len(triggered),
             "rule_actions": actions,
+            "evaluation": evaluation,
         }
 
     def correlate_with_device_status(self, device_id: str) -> dict[str, Any]:

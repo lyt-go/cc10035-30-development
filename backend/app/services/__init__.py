@@ -20,6 +20,13 @@ from app.services.edge_cache import EdgeCacheService
 from app.services.tag_binding import TagBindingService
 from app.services.data_stream import DataStreamService
 from app.services.aggregate_sink import AggregateSinkService
+from app.services.calibration import (
+    AlarmResultService,
+    ApprovalTodoService,
+    CalibrationApprovalService,
+    CalibrationVerificationService,
+    SampleReadingService,
+)
 
 SERVICES: dict[str, BaseModuleService] = {
     "device_registry": DeviceRegistryService(),
@@ -40,6 +47,11 @@ SERVICES: dict[str, BaseModuleService] = {
     "tag_binding": TagBindingService(),
     "data_stream": DataStreamService(),
     "aggregate_sink": AggregateSinkService(),
+    "calibration_verification": CalibrationVerificationService(),
+    "calibration_approval": CalibrationApprovalService(),
+    "sample_reading": SampleReadingService(),
+    "alarm_result": AlarmResultService(),
+    "approval_todo": ApprovalTodoService(),
 }
 
 
